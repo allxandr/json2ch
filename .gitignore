@@ -1,0 +1,9 @@
+/target
+/.venv
+__pycache__/
+*.pyc
+*.so
+dist/
+*.egg-info/
+.pytest_cache/
+.ref-indexer/

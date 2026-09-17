@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "json2ch"
+version = "0.1.0"
+description = "Convert JSON bytes to ClickHouse RowBinary"
+requires-python = ">=3.9"
+readme = "README.md"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "json2ch._json2ch"
