@@ -58,7 +58,10 @@ INSERT INTO t (symbol, asks) FORMAT RowBinary
 | Cast | JSON input | Result |
 | --- | --- | --- |
 | `String` | string | `String` |
-| `Int` | number or integer string | `Int64` |
+| `Int` | number, whole float, or integer string | `Int64` |
+| `Float` | number or numeric string | `Float64` (or `Float32` if the column type is `Float32`) |
+| `Bool` | `true`/`false`, `0`/`1`, or `"true"`/`"false"` | `Bool` |
+| `Nullable(T)` | JSON `null` or a value of `T` | `Nullable(...)` |
 | `DecStrToInt(n)` | decimal string | `Int64` ticks (`value * 10^n`) |
 | `[T1, T2, ...]` | array | `Tuple` |
 

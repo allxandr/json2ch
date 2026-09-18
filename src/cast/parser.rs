@@ -120,11 +120,21 @@ impl<'a> Parser<'a> {
         match ident {
             "String" => Ok(CastExpr::String),
             "Int" => Ok(CastExpr::Int),
+            "Float" => Ok(CastExpr::Float),
+            "Bool" => Ok(CastExpr::Bool),
+            "Nullable" => Ok(CastExpr::Nullable(Box::new(self.parse_paren_expr()?))),
             "DecStrToInt" => Ok(CastExpr::DecStrToInt(self.parse_int_arg()?)),
             _ => Err(CastParseError::UnknownIdentifier {
                 ident: ident.to_owned(),
             }),
         }
+    }
+
+    fn parse_paren_expr(&mut self) -> Result<CastExpr, CastParseError> {
+        self.expect(b'(')?;
+        let expr = self.parse_value()?;
+        self.expect(b')')?;
+        Ok(expr)
     }
 
     fn parse_array(&mut self) -> Result<CastExpr, CastParseError> {
@@ -153,6 +163,12 @@ mod tests {
     fn simple_expressions() {
         assert_eq!(parse(b"String").unwrap(), CastExpr::String);
         assert_eq!(parse(b"Int").unwrap(), CastExpr::Int);
+        assert_eq!(parse(b"Float").unwrap(), CastExpr::Float);
+        assert_eq!(parse(b"Bool").unwrap(), CastExpr::Bool);
+        assert_eq!(
+            parse(b"Nullable(Float)").unwrap(),
+            CastExpr::Nullable(Box::new(CastExpr::Float))
+        );
     }
 
     #[test]

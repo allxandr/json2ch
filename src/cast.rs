@@ -8,17 +8,22 @@ pub use parser::{parse, CastParseError};
 
 use thiserror::Error;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Cell {
     String(String),
     Int(i64),
+    Float(f64),
+    Bool(bool),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CastExpr {
     Tuple(Vec<CastExpr>),
+    Nullable(Box<CastExpr>),
     String,
     Int,
+    Float,
+    Bool,
     DecStrToInt(usize),
 }
 

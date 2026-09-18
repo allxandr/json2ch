@@ -29,6 +29,8 @@ struct CompiledColumn {
     engine: RsonpathEngine,
     cast: CastExpr,
     is_array: bool,
+    is_nullable: bool,
+    ch_type: String,
 }
 
 pub struct Encoder {
@@ -49,8 +51,10 @@ impl Encoder {
             .map(|col| {
                 Ok(CompiledColumn {
                     is_array: is_array_type(&col.ch_type),
+                    is_nullable: is_nullable_type(&col.ch_type),
                     engine: compile_path(&col.path)?,
                     cast: crate::cast::parse(col.cast.as_bytes())?,
+                    ch_type: col.ch_type,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -79,6 +83,29 @@ fn is_array_type(ch_type: &str) -> bool {
     ch_type.trim().starts_with("Array(")
 }
 
+fn is_nullable_type(ch_type: &str) -> bool {
+    ch_type.trim().starts_with("Nullable(")
+}
+
+fn type_core(ch_type: &str) -> String {
+    let mut t = ch_type.trim();
+    loop {
+        t = t.trim();
+        if let Some(inner) = t.strip_prefix("Array(").and_then(|s| s.strip_suffix(')')) {
+            t = inner;
+            continue;
+        }
+        if let Some(inner) = t
+            .strip_prefix("Nullable(")
+            .and_then(|s| s.strip_suffix(')'))
+        {
+            t = inner;
+            continue;
+        }
+        return t.replace(' ', "");
+    }
+}
+
 fn compile_path(path: &str) -> Result<RsonpathEngine, Error> {
     let query = rsonpath_syntax::parse(path).map_err(|err| Error::JsonPath(err.to_string()))?;
     RsonpathEngine::compile_query(&query).map_err(|err| Error::JsonPath(err.to_string()))
@@ -89,12 +116,13 @@ fn column_value(json: &[u8], col: &CompiledColumn) -> Result<Value, Error> {
     if col.is_array {
         let values = matches
             .iter()
-            .map(|value| applied_to_value(apply_json(&col.cast, value)?))
+            .map(|value| applied_to_value(&col.cast, apply_json(&col.cast, value)?, &col.ch_type))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Value::Array(values))
     } else {
         match matches.as_slice() {
-            [value] => Ok(applied_to_value(apply_json(&col.cast, value)?)?),
+            [value] => applied_to_value(&col.cast, apply_json(&col.cast, value)?, &col.ch_type),
+            [] if col.is_nullable => Ok(Value::Nullable(None)),
             [] => Err(Error::Message("JSONPath matched no values".into())),
             _ => Err(Error::Message(
                 "JSONPath matched multiple values for a non-Array column".into(),
@@ -112,15 +140,49 @@ fn extract_matches(body: &[u8], engine: &RsonpathEngine) -> Result<Vec<Vec<u8>>,
     Ok(matches.into_iter().map(|m| m.into_bytes()).collect())
 }
 
-fn applied_to_value(applied: Applied) -> Result<Value, Error> {
-    match applied {
-        Applied::Scalar(Cell::String(s)) => Ok(Value::String(s.into_bytes())),
-        Applied::Scalar(Cell::Int(n)) => Ok(Value::Int64(n)),
-        Applied::Tuple(items) => items
-            .into_iter()
-            .map(applied_to_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::Tuple),
+fn applied_to_value(expr: &CastExpr, applied: Applied, ch_type: &str) -> Result<Value, Error> {
+    match expr {
+        CastExpr::Nullable(inner) => match applied {
+            Applied::Null => Ok(Value::Nullable(None)),
+            other => Ok(Value::Nullable(Some(Box::new(applied_to_value(
+                inner, other, ch_type,
+            )?)))),
+        },
+        CastExpr::Tuple(items) => {
+            let Applied::Tuple(parts) = applied else {
+                return Err(Error::Message("expected a tuple value".into()));
+            };
+            items
+                .iter()
+                .zip(parts)
+                .map(|(item, part)| applied_to_value(item, part, ch_type))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Tuple)
+        }
+        CastExpr::String => match applied {
+            Applied::Scalar(Cell::String(s)) => Ok(Value::String(s.into_bytes())),
+            _ => Err(Error::Message("expected a string value".into())),
+        },
+        CastExpr::Int | CastExpr::DecStrToInt(_) => match applied {
+            Applied::Scalar(Cell::Int(n)) => Ok(Value::Int64(n)),
+            _ => Err(Error::Message("expected an int value".into())),
+        },
+        CastExpr::Float => match applied {
+            Applied::Scalar(Cell::Float(f)) => Ok(encode_float(f, ch_type)),
+            _ => Err(Error::Message("expected a float value".into())),
+        },
+        CastExpr::Bool => match applied {
+            Applied::Scalar(Cell::Bool(b)) => Ok(Value::Bool(b)),
+            _ => Err(Error::Message("expected a bool value".into())),
+        },
+    }
+}
+
+fn encode_float(f: f64, ch_type: &str) -> Value {
+    if type_core(ch_type) == "Float32" {
+        Value::Float32(f as f32)
+    } else {
+        Value::Float64(f)
     }
 }
 
@@ -223,5 +285,48 @@ mod tests {
                 Value::Tuple(vec![Value::Int64(200), Value::Int64(2000)]),
             ])
         );
+    }
+
+    #[test]
+    fn encodes_float_bool_and_null() {
+        let enc = encoder(&[
+            ("px", "Float64", "$.px", "Float"),
+            ("ok", "Bool", "$.ok", "Bool"),
+            ("note", "Nullable(String)", "$.note", "Nullable(String)"),
+        ]);
+        let bytes = enc
+            .encode(br#"{"px":"1.5","ok":true,"note":null}"#)
+            .unwrap();
+        let schema = Schema::from_type_strings(&[
+            ("px", "Float64"),
+            ("ok", "Bool"),
+            ("note", "Nullable(String)"),
+        ])
+        .unwrap();
+        let mut reader = clickhouse_rowbinary::RowBinaryValueReader::with_schema(
+            bytes.as_slice(),
+            RowBinaryFormat::RowBinary,
+            schema,
+        )
+        .unwrap();
+        let row = reader.read_row().unwrap().unwrap();
+        assert_eq!(row[0], Value::Float64(1.5));
+        assert_eq!(row[1], Value::Bool(true));
+        assert_eq!(row[2], Value::Nullable(None));
+    }
+
+    #[test]
+    fn nullable_missing_path_is_null() {
+        let enc = encoder(&[("note", "Nullable(Int64)", "$.note", "Nullable(Int)")]);
+        let bytes = enc.encode(br#"{"other":1}"#).unwrap();
+        let schema = Schema::from_type_strings(&[("note", "Nullable(Int64)")]).unwrap();
+        let mut reader = clickhouse_rowbinary::RowBinaryValueReader::with_schema(
+            bytes.as_slice(),
+            RowBinaryFormat::RowBinary,
+            schema,
+        )
+        .unwrap();
+        let row = reader.read_row().unwrap().unwrap();
+        assert_eq!(row[0], Value::Nullable(None));
     }
 }
