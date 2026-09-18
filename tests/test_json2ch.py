@@ -46,6 +46,19 @@ def test_encoder_reuse():
     assert a != b
 
 
+def test_float_bool_null():
+    payload = json2ch.encode(
+        b'{"px":1.5,"ok":true,"note":null}',
+        [
+            json2ch.Column("px", "Float64", "$.px", "Float"),
+            json2ch.Column("ok", "Bool", "$.ok", "Bool"),
+            json2ch.Column("note", "Nullable(String)", "$.note", "Nullable(String)"),
+        ],
+    )
+    assert isinstance(payload, bytes)
+    assert len(payload) > 0
+
+
 def test_column_repr_and_attrs():
     col = json2ch.Column("symbol", "String", "$.symbol", "String")
     assert col.name == "symbol"
